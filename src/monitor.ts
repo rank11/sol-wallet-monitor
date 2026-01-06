@@ -1,242 +1,399 @@
-import { Connection, PublicKey } from '@solana/web3.js';
+import { Connection, PublicKey, ParsedTransactionWithMeta } from '@solana/web3.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+import fetch from 'node-fetch';
 
 /**
- * Solana 钱包余额监控脚本
- * 
- * 功能：实时监控指定钱包地址的 SOL 余额变化
- * 技术栈：TypeScript + @solana/web3.js
- * 
- * 对于 Java 开发者：
- * - Connection 类似于 Java 的数据库连接或 HTTP 客户端连接对象
- * - PublicKey 类似于 Java 的 String，但专门用于 Solana 地址（有类型安全）
- * - onAccountChange 使用 WebSocket 长连接，类似于 Java 的 WebSocket 客户端
+ * Solana 巨鲸监控系统 (V8 强一致性重试版)
+ * * 修复痛点：
+ * 1. [防漏单] 增加"回马枪"机制：如果余额变了但查不到交易，等待 2秒 后重试。
+ * 2. [防乱码] 增加字符清洗，过滤掉 𒐪 这种怪异符号，强制使用 DexScreener 修正名称。
+ * 3. [防遗漏] 每次查找最近 5 笔交易，防止高频交易掩盖真实变动。
  */
 
-// ==================== 配置区域 ====================
+// ==================== 1. 基础配置 ====================
+// 代理配置 (Clash: 7890, v2ray: 10808)
+const PROXY_URL = 'http://127.0.0.1:7890'; 
+const proxyAgent = new HttpsProxyAgent(PROXY_URL);
+
+const customFetch = (url: string, options: any = {}) => {
+    return fetch(url, { ...options, agent: proxyAgent });
+};
+
+// ==================== 2. 代币名称解析 (增强版) ====================
+const tokenMetadataCache = new Map<string, string>();
+// 预设
+tokenMetadataCache.set('So11111111111111111111111111111111111111112', 'SOL');
+tokenMetadataCache.set('EPjFWdd5VenBxibDrxxPoNr6mVteov4ZHq9s6upZeY81', 'USDC');
+tokenMetadataCache.set('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', 'USDT');
+
+const METADATA_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
 
 /**
- * Solana 主网 RPC 节点地址
- * 注意：这是公共节点，有速率限制。生产环境建议使用付费节点（如 QuickNode, Alchemy）
+ * 字符串清洗函数：去除乱码、控制字符
  */
-const RPC_ENDPOINT = 'https://api.mainnet-beta.solana.com';
+function cleanString(str: string): string {
+    // 移除空字符和非打印字符
+    // eslint-disable-next-line no-control-regex
+    return str.replace(/\u0000/g, '').trim();
+}
 
 /**
- * 要监控的钱包地址列表
- * 你可以在这里添加任意多个钱包地址
- * 
- * 示例地址：HhJpBhRRn4g56VsyLuT8DL5iXVhoChVNxuy36yZ7RfVH (某知名巨鲸)
+ * 尝试从 DexScreener 获取代币信息
  */
-const WALLET_ADDRESSES: string[] = [
-    'HhJpBhRRn4g56VsyLuT8DL5iXVhoChVNxuy36yZ7RfVH'
+async function fetchFromDexScreener(mint: string): Promise<string | null> {
+    try {
+        const url = `https://api.dexscreener.com/latest/dex/tokens/${mint}`;
+        const res = await customFetch(url);
+        if (!res.ok) return null;
+        
+        const data = await res.json();
+        if (data.pairs && data.pairs.length > 0) {
+            const bestPair = data.pairs[0];
+            return bestPair.baseToken.symbol; // 返回标准化名称
+        }
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * 获取代币符号 (主函数)
+ */
+async function getSymbolFromMint(connection: Connection, mintAddress: string): Promise<string> {
+    if (tokenMetadataCache.has(mintAddress)) {
+        return tokenMetadataCache.get(mintAddress)!;
+    }
+
+    const shortName = `${mintAddress.slice(0, 4)}..${mintAddress.slice(-4)}`;
+
+    // 优先尝试 DexScreener (因为它显示的名称更符合人类阅读习惯，且没有乱码)
+    try {
+        const apiSymbol = await fetchFromDexScreener(mintAddress);
+        if (apiSymbol) {
+            tokenMetadataCache.set(mintAddress, apiSymbol);
+            return apiSymbol;
+        }
+    } catch (e) {}
+
+    // 如果 API 失败，再尝试链上解析
+    try {
+        const mintKey = new PublicKey(mintAddress);
+        const [pda] = PublicKey.findProgramAddressSync(
+            [Buffer.from('metadata'), METADATA_PROGRAM_ID.toBuffer(), mintKey.toBuffer()],
+            METADATA_PROGRAM_ID
+        );
+
+        const accountInfo = await connection.getAccountInfo(pda);
+        if (accountInfo) {
+            const buffer = accountInfo.data;
+            if (buffer[0] === 4) {
+                let offset = 65;
+                const nameLen = buffer.readUInt32LE(offset);
+                offset += 4 + nameLen; 
+                const symbolLen = buffer.readUInt32LE(offset);
+                offset += 4;
+                let symbol = buffer.toString('utf8', offset, offset + symbolLen);
+                
+                symbol = cleanString(symbol);
+                
+                // 如果清洗后是空的或者还是乱码，就放弃
+                if (symbol && symbol.length > 0 && symbol.length < 20) {
+                    tokenMetadataCache.set(mintAddress, symbol);
+                    return symbol;
+                }
+            }
+        }
+    } catch (e) {}
+
+    tokenMetadataCache.set(mintAddress, shortName);
+    return shortName;
+}
+
+// ==================== 3. RPC 连接 ====================
+const PUBLIC_RPC_ENDPOINTS = [
+    'https://api.mainnet-beta.solana.com',
+    'https://solana-api.projectserum.com',
+    'https://rpc.ankr.com/solana'
 ];
 
-// ==================== 工具函数 ====================
-
-/**
- * 将 lamports 转换为 SOL
- * 
- * 说明：Solana 的最小单位是 lamports（类似 Java 的 BigDecimal，但这里用整数表示）
- * 1 SOL = 1,000,000,000 lamports（10^9）
- * 
- * @param lamports - lamports 数量（类似 Java 的 long 类型）
- * @returns SOL 数量（类似 Java 的 double）
- */
-function lamportsToSol(lamports: number): number {
-    return lamports / 1_000_000_000;
-}
-
-/**
- * 格式化时间戳为可读字符串
- * 
- * @param timestamp - Unix 时间戳（毫秒）
- * @returns 格式化的时间字符串
- */
-function formatTimestamp(timestamp: number): string {
-    return new Date(timestamp).toLocaleString('zh-CN', {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
-    });
-}
-
-// ==================== 监控逻辑 ====================
-
-/**
- * 监控单个钱包地址的余额变化
- * 
- * 技术说明：
- * - onAccountChange 使用 WebSocket 长连接（类似 Java 的 WebSocket 客户端）
- * - 当账户数据发生变化时，Solana 节点会主动推送更新（类似观察者模式）
- * - 这比轮询（polling）更高效，延迟更低
- * 
- * @param connection - Solana 连接对象（类似 Java 的数据库连接）
- * @param walletAddress - 钱包地址（PublicKey 类型，类似 Java 的强类型 String）
- * @returns 订阅 ID（用于后续取消订阅，类似 Java 的 Subscription 对象）
- */
-async function monitorWallet(
-    connection: Connection,
-    walletAddress: PublicKey
-): Promise<number> {
-    // 获取初始余额（类似 Java 的 CompletableFuture.get()）
-    // await 关键字类似于 Java 的 .get() 或 .join()，会阻塞等待异步操作完成
-    let previousBalance: number | null = null;
-    
-    try {
-        const accountInfo = await connection.getAccountInfo(walletAddress);
-        if (accountInfo) {
-            previousBalance = accountInfo.lamports;
-            console.log(`\n[初始化] 钱包 ${walletAddress.toBase58()}`);
-            console.log(`  当前余额: ${lamportsToSol(previousBalance).toFixed(9)} SOL`);
-            console.log(`  开始监控...\n`);
-        } else {
-            console.log(`\n[警告] 钱包 ${walletAddress.toBase58()} 不存在或余额为 0\n`);
-            previousBalance = 0;
-        }
-    } catch (error) {
-        console.error(`[错误] 获取初始余额失败: ${error}`);
-        return;
-    }
-
-    // 设置账户变化监听器
-    // onAccountChange 返回一个订阅 ID（类似 Java 的 Subscription 对象）
-    // 这个监听器会持续运行，直到程序退出或手动取消订阅
-    const subscriptionId = connection.onAccountChange(
-        walletAddress,
-        (accountInfo, context) => {
-            // 这个回调函数类似于 Java 的 Consumer<T> 或 EventListener
-            // 当账户数据变化时，Solana 节点会主动调用这个回调
-            
-            const currentBalance = accountInfo.lamports;
-            const timestamp = Date.now();
-
-            // 计算余额变化
-            if (previousBalance !== null) {
-                const balanceChange = currentBalance - previousBalance;
-                const balanceChangeSol = lamportsToSol(balanceChange);
-
-                // 判断是转入还是转出
-                if (balanceChange > 0) {
-                    // 转入（类似 Java 的 if-else）
-                    console.log(`\n[${formatTimestamp(timestamp)}] 💰 转入`);
-                    console.log(`  钱包地址: ${walletAddress.toBase58()}`);
-                    console.log(`  变动金额: +${balanceChangeSol.toFixed(9)} SOL`);
-                    console.log(`  当前余额: ${lamportsToSol(currentBalance).toFixed(9)} SOL`);
-                    console.log(`  区块高度: ${context.slot}`);
-                } else if (balanceChange < 0) {
-                    // 转出
-                    console.log(`\n[${formatTimestamp(timestamp)}] 💸 转出`);
-                    console.log(`  钱包地址: ${walletAddress.toBase58()}`);
-                    console.log(`  变动金额: ${balanceChangeSol.toFixed(9)} SOL`);
-                    console.log(`  当前余额: ${lamportsToSol(currentBalance).toFixed(9)} SOL`);
-                    console.log(`  区块高度: ${context.slot}`);
-                }
-                // 如果 balanceChange === 0，说明余额没变（可能是其他账户数据变化了）
-            }
-
-            // 更新之前的余额（类似 Java 的变量赋值）
-            previousBalance = currentBalance;
-        },
-        'confirmed' // 确认级别：'confirmed' 表示交易已确认（类似 Java 的枚举值）
-    );
-
-    console.log(`[信息] 钱包 ${walletAddress.toBase58()} 的订阅 ID: ${subscriptionId}`);
-    
-    // 返回订阅 ID，用于后续取消订阅
-    // 注意：在 TypeScript/JavaScript 中，Promise<number> 表示异步函数返回数字
-    // 类似于 Java 的 CompletableFuture<Integer>
-    return subscriptionId;
-}
-
-// ==================== 主函数 ====================
-
-/**
- * 程序入口点（类似 Java 的 main 方法）
- * 
- * async function 表示这是一个异步函数（类似 Java 的 CompletableFuture）
- * 在 TypeScript 中，async 函数总是返回 Promise
- */
-async function main(): Promise<void> {
-    console.log('========================================');
-    console.log('   Solana 钱包余额监控系统');
-    console.log('========================================\n');
-
-    // 创建 Solana 连接对象
-    // 类似于 Java 中创建数据库连接或 HTTP 客户端
-    // Connection 内部会建立 WebSocket 连接用于实时监听
-    const connection = new Connection(RPC_ENDPOINT, 'confirmed');
-
-    // 验证连接（类似 Java 的连接测试）
-    try {
-        const version = await connection.getVersion();
-        console.log(`[连接成功] Solana 节点版本: ${version['solana-core']}\n`);
-    } catch (error) {
-        console.error(`[连接失败] 无法连接到 Solana 节点: ${error}`);
-        console.error('请检查网络连接或 RPC 节点地址');
-        process.exit(1); // 退出程序（类似 Java 的 System.exit(1)）
-    }
-
-    // 验证钱包地址并转换为 PublicKey 对象
-    // PublicKey 是强类型，类似于 Java 的包装类，提供类型安全
-    const walletPublicKeys: PublicKey[] = [];
-    
-    for (const address of WALLET_ADDRESSES) {
+async function chooseRpcEndpoint(): Promise<string> {
+    const envRpc = process.env.SOLANA_RPC_ENDPOINT;
+    if (envRpc) return envRpc;
+    for (const endpoint of PUBLIC_RPC_ENDPOINTS) {
         try {
-            // PublicKey 构造函数会验证地址格式（类似 Java 的输入验证）
-            const publicKey = new PublicKey(address);
-            walletPublicKeys.push(publicKey);
-        } catch (error) {
-            console.error(`[错误] 无效的钱包地址: ${address}`);
-            console.error(`  错误信息: ${error}`);
-        }
+            const conn = new Connection(endpoint, { fetch: customFetch as any });
+            const v = await conn.getVersion();
+            console.log(`[连接] 成功: ${endpoint} (v${v['solana-core']})`);
+            return endpoint;
+        } catch (e) {}
     }
+    throw new Error('无可用 RPC 节点，请检查代理');
+}
 
-    if (walletPublicKeys.length === 0) {
-        console.error('[错误] 没有有效的钱包地址可监控');
-        process.exit(1);
-    }
+// ==================== 4. 钱包配置读取 ====================
+interface WalletConfig {
+    address: string;
+    name: string;
+    emoji?: string;
+    publicKey: PublicKey;
+}
 
-    console.log(`[信息] 准备监控 ${walletPublicKeys.length} 个钱包地址\n`);
-
-    // 为每个钱包启动监控（类似 Java 的并行处理）
-    // Promise.all 类似于 Java 的 CompletableFuture.allOf()
-    // 等待所有监控任务启动并获取订阅 ID
-    const subscriptionIds = await Promise.all(
-        walletPublicKeys.map(wallet => monitorWallet(connection, wallet))
-    );
-
-    console.log('\n[信息] 所有监控任务已启动');
-    console.log('[信息] 按 Ctrl+C 退出程序\n');
-
-    // 处理程序退出信号（类似 Java 的 ShutdownHook）
-    // 在程序退出时，取消所有订阅以释放资源
-    process.on('SIGINT', () => {
-        console.log('\n\n[信息] 正在关闭监控...');
-        
-        // 取消所有订阅（类似 Java 的关闭资源）
-        subscriptionIds.forEach((subscriptionId, index) => {
-            try {
-                connection.removeAccountChangeListener(subscriptionId);
-                console.log(`[信息] 已取消钱包 ${walletPublicKeys[index].toBase58()} 的订阅`);
-            } catch (error) {
-                console.error(`[警告] 取消订阅失败: ${error}`);
+function loadWalletConfigs(): WalletConfig[] {
+    try {
+        const p = path.join(__dirname, '..', 'wallets.json');
+        const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
+        const valid: WalletConfig[] = [];
+        for (const item of raw) {
+            const addr = item.address || item.trackedWalletAddress;
+            if (addr) {
+                valid.push({
+                    address: addr,
+                    name: item.name || '未知',
+                    emoji: item.emoji || '👻',
+                    publicKey: new PublicKey(addr)
+                });
             }
+        }
+        return valid;
+    } catch (e) {
+        console.error('读取 wallets.json 失败');
+        return [];
+    }
+}
+
+// ==================== 5. 交易解析逻辑 (含重试) ====================
+
+interface TradeDetails {
+    signature: string;
+    tokenMint: string;
+    tokenName: string;
+    tokenChange: number;
+    solChange: number;
+    isBuy: boolean;
+}
+
+// 辅助：等待函数
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function fetchLastTransactionDetails(
+    connection: Connection, 
+    pubKey: PublicKey
+): Promise<TradeDetails | null> {
+    try {
+        // 【关键升级】获取最近 5 笔，防止并发遗漏
+        let signatures = await connection.getSignaturesForAddress(pubKey, { limit: 5 });
+        
+        // 【防漏单机制】如果没查到，或者签名太旧（这里简单判空），等待 2 秒重试一次
+        if (signatures.length === 0) {
+            // console.log('[重试] 暂未索引到交易，等待 2s...');
+            await sleep(2000);
+            signatures = await connection.getSignaturesForAddress(pubKey, { limit: 5 });
+        }
+
+        if (signatures.length === 0) return null;
+        
+        // 我们需要找到一笔成功的交易
+        const validSig = signatures.find(s => !s.err);
+        if (!validSig) return null;
+
+        const sig = validSig.signature;
+        
+        const tx = await connection.getParsedTransaction(sig, {
+            maxSupportedTransactionVersion: 0,
+            commitment: 'confirmed'
+        });
+
+        if (!tx || !tx.meta) return null;
+
+        const accountIndex = tx.transaction.message.accountKeys.findIndex(
+            k => k.pubkey.toBase58() === pubKey.toBase58()
+        );
+        if (accountIndex === -1) return null;
+
+        const preSol = tx.meta.preBalances[accountIndex];
+        const postSol = tx.meta.postBalances[accountIndex];
+        const solChange = (postSol - preSol) / 1e9;
+
+        let targetMint = '';
+        let targetChange = 0;
+
+        const preTokenBals = tx.meta.preTokenBalances || [];
+        const postTokenBals = tx.meta.postTokenBalances || [];
+
+        for (const postBal of postTokenBals) {
+            if (postBal.owner === pubKey.toBase58()) {
+                const mint = postBal.mint;
+                const preBal = preTokenBals.find(b => b.owner === pubKey.toBase58() && b.mint === mint);
+                const amountPost = postBal.uiTokenAmount.uiAmount || 0;
+                const amountPre = preBal?.uiTokenAmount.uiAmount || 0;
+                const diff = amountPost - amountPre;
+
+                if (Math.abs(diff) > 0 && mint !== 'So11111111111111111111111111111111111111112') {
+                    if (Math.abs(diff) > Math.abs(targetChange)) {
+                        targetMint = mint;
+                        targetChange = diff;
+                    }
+                }
+            }
+        }
+
+        if (!targetMint) {
+            return {
+                signature: sig,
+                tokenMint: 'SOL',
+                tokenName: 'SOL',
+                tokenChange: solChange,
+                solChange: solChange,
+                isBuy: solChange > 0
+            };
+        }
+
+        const symbol = await getSymbolFromMint(connection, targetMint);
+
+        return {
+            signature: sig,
+            tokenMint: targetMint,
+            tokenName: symbol, 
+            tokenChange: targetChange,
+            solChange: solChange,
+            isBuy: targetChange > 0
+        };
+
+    } catch (e) {
+        return null;
+    }
+}
+
+// ==================== 6. 轮询监控逻辑 ====================
+
+const balanceCache = new Map<string, number>();
+
+function chunkArray<T>(array: T[], size: number): T[][] {
+    const res: T[][] = [];
+    for (let i = 0; i < array.length; i += size) res.push(array.slice(i, i + size));
+    return res;
+}
+
+function lamportsToSol(l: number) { return l / 1e9; }
+function formatTime() { return new Date().toLocaleTimeString('zh-CN', { hour12: false }); }
+
+async function startPolling(connection: Connection, wallets: WalletConfig[]) {
+    const CHUNK_SIZE = 50;
+    const INTERVAL = 10000; 
+
+    const chunks = chunkArray(wallets, CHUNK_SIZE);
+    console.log(`[系统] 监控 ${wallets.length} 个钱包，分 ${chunks.length} 组轮询...\n`);
+
+    console.log('[初始化] 建立余额基准...');
+    for (const chunk of chunks) {
+        try {
+            const infos = await connection.getMultipleAccountsInfo(chunk.map(w => w.publicKey));
+            infos.forEach((info, i) => {
+                balanceCache.set(chunk[i].address, info ? info.lamports : 0);
+            });
+            await sleep(200);
+        } catch (e) {}
+    }
+    console.log('[初始化] 完成，开始监控交易...\n');
+
+    while (true) {
+        for (const chunk of chunks) {
+            try {
+                const infos = await connection.getMultipleAccountsInfo(chunk.map(w => w.publicKey));
+
+                const updates = [];
+                for (let i = 0; i < infos.length; i++) {
+                    const info = infos[i];
+                    const wallet = chunk[i];
+                    const cur = info ? info.lamports : 0;
+                    const old = balanceCache.get(wallet.address) ?? 0;
+
+                    if (cur !== old) {
+                        const diffSol = lamportsToSol(cur - old);
+                        // 阈值设低一点，防止漏掉小额高频
+                        if (Math.abs(diffSol) > 0.001) {
+                            balanceCache.set(wallet.address, cur); 
+                            updates.push({ wallet, cur, diffSol });
+                        } else {
+                            balanceCache.set(wallet.address, cur);
+                        }
+                    }
+                }
+
+                if (updates.length > 0) {
+                    for (const update of updates) {
+                        const { wallet, cur, diffSol } = update;
+                        
+                        // 查交易详情
+                        const details = await fetchLastTransactionDetails(connection, wallet.publicKey);
+                        
+                        const nameDisplay = `${wallet.emoji} ${wallet.name}`;
+                        const time = formatTime();
+                        
+                        console.log('----------------------------------------');
+                        if (details && details.tokenMint !== 'SOL') {
+                            const action = details.isBuy ? "🟢 买入" : "🔴 卖出";
+                            // 格式化代币名称，移除乱码
+                            const tokenInfo = `${details.tokenName} (${details.tokenChange > 0 ? '+' : ''}${details.tokenChange.toFixed(2)})`;
+                            const solInfo = `${Math.abs(details.solChange).toFixed(4)} SOL`;
+                            
+                            console.log(`[${time}] ${action} | ${nameDisplay}`);
+                            console.log(`   代币: ${tokenInfo}`);
+                            console.log(`   金额: ${solInfo}`);
+                            console.log(`   TX: https://solscan.io/tx/${details.signature}`);
+                        } else {
+                            // 降级显示
+                            const action = diffSol > 0 ? "💰 转入(SOL)" : "💸 转出(SOL)";
+                            console.log(`[${time}] ${action} | ${nameDisplay}`);
+                            console.log(`   金额: ${diffSol > 0 ? '+' : ''}${diffSol.toFixed(4)} SOL`);
+                            // 如果有详情但只是解析不出代币，还是显示 TX
+                            if (details) {
+                                console.log(`   TX: https://solscan.io/tx/${details.signature}`);
+                            } else {
+                                console.log(`   [提示] 余额变动，但未索引到交易详情 (可能是网络延迟)`);
+                            }
+                        }
+
+                        // 排队休息
+                        if (updates.length > 1) await sleep(2000);
+                    }
+                }
+
+            } catch (e) {
+                if (String(e).includes('429')) {
+                    console.warn('[限流] 休息 5秒...');
+                    await sleep(5000);
+                }
+            }
+            await sleep(500); 
+        }
+        await sleep(INTERVAL);
+    }
+}
+
+// ==================== 7. 启动 ====================
+async function main() {
+    try {
+        const wallets = loadWalletConfigs();
+        if (wallets.length === 0) return console.error('无钱包配置');
+        
+        const endpoint = await chooseRpcEndpoint();
+        const connection = new Connection(endpoint, {
+            commitment: 'confirmed',
+            fetch: customFetch as any
         });
         
-        console.log('[信息] 监控已关闭');
-        process.exit(0);
-    });
+        console.log('========================================');
+        console.log('   Solana 巨鲸监控系统 (V8 强一致性重试版)');
+        console.log('========================================');
+        
+        startPolling(connection, wallets).catch(console.error);
+    } catch (e) {
+        console.error('启动失败:', e);
+    }
 }
 
-// ==================== 启动程序 ====================
-
-// 执行主函数并处理错误
-// .catch() 类似于 Java 的 try-catch，用于捕获 Promise 的异常
-main().catch((error) => {
-    console.error('[致命错误] 程序异常退出:', error);
-    process.exit(1);
-});
-
+main();

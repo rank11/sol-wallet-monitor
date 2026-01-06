@@ -17,12 +17,14 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@solana/web3.js": "^1.95.2"
+    "@solana/web3.js": "^1.98.4",
+    "@types/node-fetch": "^2.6.13",
+    "https-proxy-agent": "^7.0.6",
+    "node-fetch": "^2.7.0"
   },
   "devDependencies": {
-    "@types/node": "^20.14.0",
+    "@types/node": "^20.19.27",
     "ts-node": "^10.9.2",
-    "typescript": "^5.5.0"
+    "typescript": "^5.9.3"
   }
 }
-
