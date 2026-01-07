@@ -5,17 +5,16 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import fetch from 'node-fetch';
 
 /**
- * Solana 巨鲸监控系统 (V13 死磕防漏版)
- * * 核心升级：
- * 1. [死磕机制] 余额变动后，若未查到交易，将进行 5 次指数级重试 (2s, 3s, 4s...)。
- * 2. [RPC优化] 支持直接填入 Helius/QuickNode 的 API Key。
- * 3. [防漏单] 只要余额变了，就算查不到交易详情，最终也会强制播报余额变动。
+ * Solana 巨鲸监控系统 (V13 Helius 1秒极速版)
+ * * 配置说明：
+ * 1. 已开启 1秒 极速轮询。
+ * 2. 内置死磕重试机制，防止因轮询太快导致交易详情还没索引到的问题。
  */
 
-// ==================== 1. 基础配置 ====================
-// ⚠️ 强烈建议替换为 Helius 免费 RPC，公共节点极易漏单
-// 格式: 'https://mainnet.helius-rpc.com/?api-key=xxxxxxx'
-const CUSTOM_RPC_URL = ''; 
+// ==================== 1. 基础配置 (请修改这里) ====================
+
+// 👇👇👇 在这里填入您的 Helius 免费 Key 👇👇👇
+const CUSTOM_RPC_URL = 'https://mainnet.helius-rpc.com/?api-key=497e9af6-ea13-4430-877e-3c71cd2ebd94'; 
 
 // 代理配置 (Clash: 7890)
 const PROXY_URL = 'http://127.0.0.1:7890'; 
@@ -87,30 +86,13 @@ async function getSymbolFromMint(connection: Connection, mintAddress: string): P
 }
 
 // ==================== 3. RPC 连接 ====================
-const PUBLIC_RPC_ENDPOINTS = [
-    'https://api.mainnet-beta.solana.com',
-    'https://solana-api.projectserum.com',
-    'https://rpc.ankr.com/solana'
-];
-
 async function chooseRpcEndpoint(): Promise<string> {
-    // 1. 如果填了自定义 RPC，直接用
-    if (CUSTOM_RPC_URL && CUSTOM_RPC_URL.length > 10) {
-        console.log(`[配置] 使用自定义 RPC 节点`);
+    if (CUSTOM_RPC_URL && CUSTOM_RPC_URL.length > 20) {
         return CUSTOM_RPC_URL;
     }
-
-    // 2. 否则用公共节点
-    for (const endpoint of PUBLIC_RPC_ENDPOINTS) {
-        try {
-            const conn = new Connection(endpoint, { fetch: customFetch as any });
-            const v = await conn.getVersion();
-            console.log(`[连接] 成功连接公共节点: ${endpoint} (v${v['solana-core']})`);
-            console.log(`[建议] 公共节点极易漏单，强烈建议申请 Helius 免费 Key 填入代码顶部！`);
-            return endpoint;
-        } catch (e) {}
-    }
-    throw new Error('无可用 RPC 节点');
+    // 没填 Key 时的保底逻辑
+    console.warn("⚠️ 未检测到 Helius Key，正在使用公共节点 (可能会被封)...");
+    return 'https://api.mainnet-beta.solana.com';
 }
 
 // ==================== 4. 钱包配置读取 ====================
@@ -144,7 +126,7 @@ function loadWalletConfigs(): WalletConfig[] {
     }
 }
 
-// ==================== 5. 交易解析逻辑 (V13 死磕版) ====================
+// ==================== 5. 交易解析逻辑 (V13) ====================
 
 interface TradeDetails {
     signature: string;
@@ -164,33 +146,22 @@ async function fetchLastTransactionDetails(
 ): Promise<TradeDetails | null> {
     let signatures: any[] = [];
     let attempts = 0;
-    const maxRetries = 5; // 死磕 5 次
+    const maxRetries = 5;
 
-    // --- 阶段 1: 死磕获取签名 ---
+    // 阶段1: 死磕获取签名 (因为1秒轮询太快，交易可能还没落地)
     while (attempts < maxRetries) {
         try {
             signatures = await connection.getSignaturesForAddress(pubKey, { limit: 3 });
-            
-            // 如果拿到了签名，且没有错误，就跳出循环
-            if (signatures.length > 0 && !signatures[0].err) {
-                break;
-            }
-        } catch (e) {
-            // 忽略网络错误，继续重试
-        }
-
+            if (signatures.length > 0 && !signatures[0].err) break;
+        } catch (e) {}
         attempts++;
-        // 指数退避：第一次等 2s, 第二次 3s, 第三次 4s...
-        if (attempts < maxRetries) {
-            // console.log(`[重试] 未索引到交易，第 ${attempts} 次重试...`);
-            await sleep(1000 + (attempts * 1000));
-        }
+        if (attempts < maxRetries) await sleep(1000 + (attempts * 500)); // 渐进式等待
     }
 
     if (signatures.length === 0) return null;
     const sig = signatures[0].signature;
 
-    // --- 阶段 2: 获取详情 ---
+    // 阶段2: 获取详情
     try {
         const tx = await connection.getParsedTransaction(sig, {
             maxSupportedTransactionVersion: 0,
@@ -313,10 +284,13 @@ function formatTime() { return new Date().toLocaleTimeString('zh-CN', { hour12: 
 
 async function startPolling(connection: Connection, wallets: WalletConfig[]) {
     const CHUNK_SIZE = 50;
-    const INTERVAL = 10000; 
+    
+    // 👇👇👇 这里的 1000 就是 1秒 轮询 👇👇👇
+    const INTERVAL = 1000; 
 
     const chunks = chunkArray(wallets, CHUNK_SIZE);
-    console.log(`[系统] 监控 ${wallets.length} 个钱包，分 ${chunks.length} 组轮询...\n`);
+    console.log(`[系统] 监控 ${wallets.length} 个钱包，分 ${chunks.length} 组轮询...`);
+    console.log(`[极速模式] 轮询间隔: ${INTERVAL}ms (注意流量消耗)`);
 
     console.log('[初始化] 建立余额基准...');
     for (const chunk of chunks) {
@@ -325,10 +299,10 @@ async function startPolling(connection: Connection, wallets: WalletConfig[]) {
             infos.forEach((info, i) => {
                 balanceCache.set(chunk[i].address, info ? info.lamports : 0);
             });
-            await sleep(200);
+            await sleep(100);
         } catch (e) {}
     }
-    console.log('[初始化] 完成，开始监控交易...\n');
+    console.log('[初始化] 完成，开始极速监控...\n');
 
     while (true) {
         for (const chunk of chunks) {
@@ -343,7 +317,7 @@ async function startPolling(connection: Connection, wallets: WalletConfig[]) {
 
                     if (cur !== old) {
                         const diffSol = lamportsToSol(cur - old);
-                        // 任何微小变动都记录，防止漏 wSOL 交易
+                        // 1秒轮询时，微小变动可能是 Gas 费或 wSOL，必须查
                         if (Math.abs(diffSol) > 0.000001) { 
                             balanceCache.set(wallet.address, cur); 
                             updates.push({ wallet, cur, diffSol });
@@ -354,14 +328,15 @@ async function startPolling(connection: Connection, wallets: WalletConfig[]) {
                 }
 
                 if (updates.length > 0) {
-                    for (const update of updates) {
+                    // 并行查详情 (因为是 Helius，可以稍微奔放一点，不用像公共节点那样死排队)
+                    // 但为了保险，还是保留 await Promise.all
+                    const tasks = updates.map(async (update) => {
                         const { wallet, cur, diffSol } = update;
                         const details = await fetchLastTransactionDetails(connection, wallet.publicKey);
                         const nameDisplay = `${wallet.emoji} ${wallet.name}`;
                         const time = formatTime();
                         
                         if (details) {
-                            // 成功抓取到交易详情
                             if (details.type === 'TRANSFER') {
                                 if (Math.abs(details.solChange) > 0.001) {
                                     const action = details.solChange > 0 ? "💰 纯SOL转入" : "💸 纯SOL转出";
@@ -371,7 +346,7 @@ async function startPolling(connection: Connection, wallets: WalletConfig[]) {
                                     console.log(`   TX: https://solscan.io/tx/${details.signature}`);
                                 }
                             } else if (details.type !== 'WRAP') {
-                                // SWAP or UNKNOWN
+                                // SWAP
                                 const action = details.isBuy ? "🟢 买入" : "🔴 卖出";
                                 const tokenInfo = `${details.tokenName} (${details.tokenChange > 0 ? '+' : ''}${details.tokenChange.toFixed(2)})`;
                                 const solInfo = `${Math.abs(details.solChange).toFixed(4)} SOL`;
@@ -384,24 +359,23 @@ async function startPolling(connection: Connection, wallets: WalletConfig[]) {
                                 console.log(`   TX: https://solscan.io/tx/${details.signature}`);
                             }
                         } else {
-                            // 兜底：虽然重试了5次还是没查到交易，但必须播报余额变动，防止漏消息
+                            // 兜底
                             if (Math.abs(diffSol) > 0.01) {
                                 const action = diffSol > 0 ? "💰 余额增加" : "💸 余额减少";
                                 console.log('----------------------------------------');
                                 console.log(`[${time}] ${action} | ${nameDisplay}`);
-                                console.log(`   金额: ${diffSol > 0 ? '+' : ''}${diffSol.toFixed(4)} SOL (⚠️ 节点严重延迟，未索引到交易)`);
+                                console.log(`   金额: ${diffSol > 0 ? '+' : ''}${diffSol.toFixed(4)} SOL (延迟太高,未索引到交易)`);
                             }
                         }
-                        if (updates.length > 1) await sleep(2000);
-                    }
+                    });
+                    await Promise.all(tasks);
                 }
             } catch (e) {
-                if (String(e).includes('429')) {
-                    console.warn('[限流] 休息 5秒...');
-                    await sleep(5000);
-                }
+                // Helius 很少报 429，除非欠费
+                console.warn('[RPC警告]', e);
             }
-            await sleep(500); 
+            // 极速模式下，组间间隔可以很短
+            await sleep(50); 
         }
         await sleep(INTERVAL);
     }
@@ -411,11 +385,15 @@ async function main() {
     try {
         const wallets = loadWalletConfigs();
         if (wallets.length === 0) return console.error('无钱包配置');
+        
+        // 验证 RPC
         const endpoint = await chooseRpcEndpoint();
         const connection = new Connection(endpoint, { commitment: 'confirmed', fetch: customFetch as any });
+        
         console.log('========================================');
-        console.log('   Solana 巨鲸监控系统 (V13 死磕防漏版)');
+        console.log('   Solana 巨鲸监控系统 (V13 极速版)');
         console.log('========================================');
+        
         startPolling(connection, wallets).catch(console.error);
     } catch (e) {
         console.error('启动失败:', e);
