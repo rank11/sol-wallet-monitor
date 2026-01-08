@@ -1,161 +1,142 @@
 Markdown
 
-# 🐳 Solana Smart Money Monitor (V18 Enterprise)
-# Solana 巨鲸/聪明钱监控系统 (V18 企业级热更新版)
+# 🐳 Solana Smart Money Monitor 
+# Solana 聪明钱链上监控
 
 [![TypeScript](https://img.shields.io/badge/Language-TypeScript-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Runtime-Node.js-green.svg)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**[English]**
-A professional-grade Solana blockchain monitor designed to track "Smart Money" and "Whales" in real-time.
-Features include **Hot-Reloading** (update wallets without restarting), **Telegram Alerts** with rich HTML formatting, **Anti-Spam Filtering**, **RugCheck Integration**, and **Automated Affiliate Linking** (Axiom/GMGN) for monetization.
-
-**[中文]**
-这是一个企业级的 Solana 链上监控系统，专为捕捉“聪明钱”和“巨鲸”动向而生。
-核心功能包括 **配置热更新**（无需重启即可更新监控名单）、**Telegram 自动报警**（精美排版）、**垃圾交易过滤**、**RugCheck 安全评分直显**，以及 **自动引流变现**（集成 Axiom/GMGN 专属邀请链接）。
+[English](#english) | [中文说明](#chinese)
 
 ---
 
-## ✨ Key Features (核心功能)
+<a name="english"></a>
+## 🇬🇧 English Documentation
 
-* **⚡ Zero-Downtime Hot Reload (热更新)**:
-    * Monitor `wallets.json` changes in real-time. Add/remove wallets instantly without restarting the script.
-    * 实时监听 `wallets.json` 文件，修改名单后立即生效，无需重启脚本，确保不错过任何交易。
-* **📱 Smart Telegram Alerts (智能推送)**:
-    * Sends formatted alerts with Token Info, MC, Price, and **RugCheck Risk Score**.
-    * 发送包含代币信息、市值、价格及 **RugCheck 安全评分** 的精美 HTML 消息。
-* **💰 Monetization Ready (引流变现)**:
-    * Auto-appends your referral codes (`ref`/`invite`) to GMGN, Axiom, and Photon links.
-    * 所有推送链接自动携带你的专属邀请码，流量直接变现。
-* **🛡️ Anti-Spam & Risk Filter (防噪风控)**:
-    * Filters out small transactions (`< 0.5 SOL`) and spam token transfers.
-    * 自动过滤小额转账（如 `< 0.5 SOL`）和无意义的垃圾交互。
-* **🤖 Production Ready (生产级部署)**:
-    * Supports PM2 process management for 24/7 uptime.
-    * 支持 PM2 进程守护，实现 7x24 小时无人值守运行。
+### 📖 Introduction
+A professional-grade, real-time Solana blockchain monitor designed to track "Smart Money" and "Whales".
+Unlike simple transaction listeners, this system features a **Dual-Core Data Engine** (Jupiter + DexScreener) for accurate pricing, an **Anti-Spam Filter** to ignore fake airdrops, and a **Smart Concurrency Queue** to bypass RPC rate limits (429 errors).
+
+### ✨ Key Features (V28)
+1.  **🚀 Dual-Core Data Engine**:
+    * **Jupiter API (Primary)**: Provides ultra-fast price updates and correct token symbols.
+    * **DexScreener (Secondary)**: Fetches Market Cap (FDV) and Liquidity data.
+    * *Result:* No more "UNKNOWN" tokens or incorrect prices.
+2.  **🛡️ Smart Anti-Spam & AirDrop Filter**:
+    * Automatically distinguishes between real **SWAPS** (Buy/Sell) and **TRANSFERS** (Dev Airdrops/Distributions).
+    * Filters out spam tokens that simulate activity without real SOL spending.
+3.  **🚦 Traffic Control & Rate Limiting**:
+    * Implements a concurrency queue (`MAX_CONCURRENT_TASKS = 5`).
+    * Prevents `429 Too Many Requests` errors from free-tier RPCs (e.g., Helius) during high-traffic moments.
+4.  **Tb Human-Readable Prices**:
+    * Auto-formats meme coin prices (e.g., converts `5.38e-7` to `$0.00000053`).
+5.  **🔄 Hot Reload**:
+    * Update `wallets.json` on the fly without restarting the script.
+
+### 🛠️ Installation
+
+1.  **Clone the repo**
+    ```bash
+    git clone [https://github.com/your-username/sol-whale-monitor.git](https://github.com/your-username/sol-whale-monitor.git)
+    cd sol-whale-monitor
+    ```
+
+2.  **Install Dependencies**
+    ```bash
+    npm install
+    ```
+
+3.  **Configuration**
+    * Open `src/monitor.ts` to configure your **RPC URL**, **Telegram Bot Token**, and **Proxy Port** (default: 7890).
+    * Create `wallets.json` in the root directory:
+        ```json
+        [
+          { "address": "Wallet_Address_Here", "name": "Smart Money 1", "emoji": "👻" },
+          { "address": "Wallet_Address_Here", "name": "Whale 2", "emoji": "🐋" }
+        ]
+        ```
+
+4.  **Run**
+    ```bash
+    npm start
+    ```
 
 ---
 
-## 🛠️ Environment Setup (环境配置)
+<a name="chinese"></a>
+## 🇨🇳 中文说明
 
-### 1. Prerequisites (前置要求)
-* **Node.js**: `v16.0.0` or higher (建议 v18+).
-* **RPC Provider**: A private RPC key from [Helius](https://helius.dev) or [Alchemy](https://alchemy.com).
-    * *Note: Free tiers are sufficient for testing; standard tiers recommended for production.*
-* **Network Proxy**: Required if you are in a region where Telegram/RPC is blocked (e.g., Clash at port 7890).
+### 📖 项目简介
+这是一个生产级的 Solana 链上监控系统，专为捕捉“聪明钱”和“巨鲸”动向而设计。
+与普通的监控脚本不同，本项目集成了 **双核数据引擎**（Jupiter + DexScreener）以确保数据准确性，拥有 **防空投误报系统** 过滤垃圾信息，并内置了 **智能并发流控**，即使使用免费的 RPC 节点也能稳定运行不报错。
 
-### 2. Installation (安装步骤)
+### ✨ 核心功能 (V28)
+1.  **🚀 双核数据引擎**:
+    * **Jupiter API (主)**: 毫秒级获取最准确的代币价格和 Symbol，解决代理屏蔽导致的名字解析失败问题。
+    * **DexScreener (副)**: 补充市值 (FDV) 和流动性池数据。
+    * *效果:* 彻底告别 "UNKNOWN" 代币名和错误的土狗币价格。
+2.  **🛡️ 智能防空投/误报过滤**:
+    * 通过分析交易类型和 SOL 变动，自动区分 **真实买卖 (Swap)** 和 **项目方空投/分发 (Transfer)**。
+    * 只有真实花钱买入的交易才会被推送，拒绝垃圾信息轰炸。
+3.  **🚦 智能并发流控**:
+    * 内置任务队列，严格控制并发数 (`MAX_CONCURRENT_TASKS = 5`)。
+    * 有效防止在行情剧烈波动时，Helius 等 RPC 节点返回 `429 Too Many Requests` 封禁 IP。
+4.  **Tb 价格显示优化**:
+    * 针对 Meme 币极小的价格进行美化（例如将 `5.38e-7` 自动格式化为 `$0.00000053`），拒绝科学计数法。
+5.  **🔄 热更新配置**:
+    * 运行中修改 `wallets.json` 名单，脚本会自动重载，无需重启进程。
 
-```bash
-# 1. Clone the repository (克隆项目)
-git clone [https://github.com/your-repo/sol-whale-monitor.git](https://github.com/your-repo/sol-whale-monitor.git)
+### 🛠️ 安装与使用
 
-# 2. Enter the directory (进入目录)
-cd sol-whale-monitor
+1.  **下载项目**
+    ```bash
+    git clone [https://github.com/your-username/sol-whale-monitor.git](https://github.com/your-username/sol-whale-monitor.git)
+    cd sol-whale-monitor
+    ```
 
-# 3. Install dependencies (安装依赖包)
-# This installs web3.js, telegram-bot-api, etc.
-npm install
+2.  **安装依赖包**
+    ```bash
+    npm install
+    ```
 
-# 4. Install PM2 globally (全局安装 PM2 进程守护工具)
-# Required for 24/7 background running.
-npm install pm2 -g
-⚙️ Configuration (详细配置)
-1. System Config (src/monitor.ts)
-Open src/monitor.ts and update the top section: 打开 src/monitor.ts 顶部，修改以下关键参数：
+3.  **配置文件**
+    * 打开 `src/monitor.ts` 修改顶部的配置项：
+        * `CUSTOM_RPC_URL`: 你的 Solana RPC 节点链接。
+        * `TG_BOT_TOKEN`: Telegram 机器人的 Token。
+        * `PROXY_URL`: 本地 VPN 代理地址 (默认 127.0.0.1:7890)。
+    * 在根目录创建 `wallets.json` 文件：
+        ```json
+        [
+          { "address": "钱包地址粘贴在这里", "name": "聪明钱01", "emoji": "👻" },
+          { "address": "钱包地址粘贴在这里", "name": "大户02", "emoji": "🐋" }
+        ]
+        ```
 
-TypeScript
+4.  **启动监控**
+    ```bash
+    npm start
+    ```
+    *建议使用 PM2 后台运行:*
+    ```bash
+    pm2 start src/monitor.ts --interpreter ./node_modules/.bin/ts-node --name "sol-monitor"
+    ```
 
-// [RPC] Private Node Key (Alchemy is recommended for high TPS)
-// 推荐使用 Alchemy 以支持 1秒/次 的高频轮询
-const CUSTOM_RPC_URL = '[https://solana-mainnet.g.alchemy.com/v2/YOUR_API_KEY](https://solana-mainnet.g.alchemy.com/v2/YOUR_API_KEY)';
+### ⚙️ 参数详解 (src/monitor.ts)
 
-// [Telegram] Bot Credentials
-// 获取方式: @BotFather -> /newbot
-const TG_BOT_TOKEN = '123456:ABC-DEF...'; 
-// 获取方式: @userinfobot -> ID field
-const TG_CHAT_ID = '123456789';      
+| 变量名 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `MAX_CONCURRENT_TASKS` | `5` | **并发阈值**。同时处理的钱包数量，设太高会导致 429 报错。 |
+| `MIN_SOL_THRESHOLD` | `0` | **推送门槛**。交易涉及的 SOL 小于此值将不推送 (0 代表推送所有)。 |
+| `PROXY_URL` | `127.0.0.1:7890` | **代理地址**。国内环境必须配置，否则无法连接 TG 和 API。 |
+| `CACHE_TTL` | `60000` | **缓存时间**。代币信息缓存毫秒数，节省 API 调用次数。 |
 
-// [Filters] Minimum SOL amount to trigger alert
-// 最小推送金额：低于 0.5 SOL 的交易将被忽略，防止刷屏
-const MIN_SOL_THRESHOLD = 0.5; 
+---
 
-// [Affiliate] Your Invite Codes
-// 你的引流邀请码
-const REF_CONFIG = {
-    gmgn: 'rank1143',
-    axiom: 'rank1143'
-};
+## ⚠️ Disclaimer / 免责声明
 
-// [Network] Proxy Address (e.g., Clash uses 7890)
-// 代理地址，解决国内连不上 TG 的问题
-const PROXY_URL = '[http://127.0.0.1:7890](http://127.0.0.1:7890)'; 
-2. Wallet List (wallets.json)
-Create or edit wallets.json in the root directory: 在根目录创建或编辑 wallets.json：
+This software is for educational and research purposes only. Cryptocurrency trading involves high risk. The developers are not responsible for any financial losses.
 
-JSON
+本软件仅供学习和研究使用。加密货币投资风险极高，开发者不对任何资金损失负责。请妥善保管您的私钥和 API Key。
 
-[
-  {
-    "address": "GjXobpiEexQqqLkghB29AtcwyJRokbeGDSkz8Kn7GGr1",
-    "name": "Smart Money 01",
-    "emoji": "👻"
-  },
-  {
-    "address": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
-    "name": "Alpha Hunter",
-    "emoji": "⚔️"
-  }
-]
-🚀 Usage Instructions (指令操作注解)
-Mode 1: Development (开发/调试模式)
-Use this mode to see logs in your terminal instantly. 此模式适合调试，日志会直接打印在终端窗口，关闭窗口即停止。
-
-Bash
-
-# Start the monitor using ts-node
-# 使用 ts-node 直接启动监控
-npm start
-Mode 2: Production (生产/后台模式)
-Recommended! Use PM2 to keep the script running 24/7 in the background. 强烈推荐！ 使用 PM2 让脚本在后台永久运行，即使关闭终端或服务器重启也能自动恢复。
-
-Bash
-
-# 1. Start the process (启动后台进程)
-# --interpreter specifies using ts-node to run TypeScript directly
-pm2 start src/monitor.ts --interpreter ./node_modules/.bin/ts-node --name "sol-monitor"
-
-# 2. View logs (查看实时日志)
-# Check if everything is running correctly
-pm2 logs
-
-# 3. Monitor status (查看进程状态)
-# View CPU and Memory usage
-pm2 monit
-
-# 4. Stop the process (停止监控)
-pm2 stop sol-monitor
-
-# 5. Restart the process (重启监控)
-pm2 restart sol-monitor
-🔄 How Hot Reload Works (热更新说明)
-Keep the script running (via npm start or pm2). 保持脚本运行。
-
-Open wallets.json and add a new wallet address. 打开 wallets.json 并添加一个新的钱包地址。
-
-Save the file (Ctrl+S). 保存文件。
-
-The system will detect the change and reload automatically: 系统会自动检测到文件变化并重新加载：
-
-[System] Config file changed. Reloading... [System] Reload success! Monitoring 360 wallets.
-
-❓ FAQ (常见问题)
-Q: ECONNRESET or FetchError? A: Usually a proxy issue. Check if your Clash/V2Ray is running and the port in monitor.ts matches (7890). A: 通常是代理问题。请检查梯子是否开启，以及代码里的端口 (7890) 是否正确。
-
-Q: 400 Bad Request: chat not found? A: You must send /start to your bot in Telegram first to authorize it. A: 你必须先在 Telegram 里给你的机器人发送 /start，否则机器人没有权限给你发消息。
-
-Q: Logs show "Unknown Token"? A: Extremely new tokens might not be indexed by DexScreener yet. The script will still show the CA for you to check manually. A: 极早期的土狗盘可能还没被 DexScreener 收录。脚本会直接显示合约地址 (CA) 供你手动查询。
-
-⚠️ Disclaimer (免责声明)
-This tool is for educational and research purposes only. Cryptocurrency trading involves high risk. 本项目仅供学习和研究使用。加密货币投资风险极高，请自行把控风险。
+---
