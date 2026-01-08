@@ -1,6 +1,4 @@
-Markdown
-
-# 🐳 Solana Smart Money Monitor 
+# 🐳 Solana Smart Money Monitor
 # Solana 聪明钱链上监控
 
 [![TypeScript](https://img.shields.io/badge/Language-TypeScript-blue.svg)](https://www.typescriptlang.org/)
@@ -18,7 +16,11 @@ Markdown
 A professional-grade, real-time Solana blockchain monitor designed to track "Smart Money" and "Whales".
 Unlike simple transaction listeners, this system features a **Dual-Core Data Engine** (Jupiter + DexScreener) for accurate pricing, an **Anti-Spam Filter** to ignore fake airdrops, and a **Smart Concurrency Queue** to bypass RPC rate limits (429 errors).
 
-### ✨ Key Features (V28)
+#### 📱 Live Preview (Telegram Alerts)
+> Real-time notifications with accurate prices, MC, and risk analysis.
+![Telegram Alerts Preview](image_5a6082.jpg)
+
+### ✨ Key Features
 1.  **🚀 Dual-Core Data Engine**:
     * **Jupiter API (Primary)**: Provides ultra-fast price updates and correct token symbols.
     * **DexScreener (Secondary)**: Fetches Market Cap (FDV) and Liquidity data.
@@ -61,6 +63,14 @@ Unlike simple transaction listeners, this system features a **Dual-Core Data Eng
     ```bash
     npm start
     ```
+    *Recommended: Run with PM2 for background monitoring:*
+    ```bash
+    pm2 start src/monitor.ts --interpreter ./node_modules/.bin/ts-node --name "sol-monitor"
+    ```
+
+#### 🖥️ Running Status (Terminal Logs)
+> High-performance logging with auto-retry and concurrency control.
+![Terminal Logs Preview](image_5a6024.jpg)
 
 ---
 
@@ -71,7 +81,11 @@ Unlike simple transaction listeners, this system features a **Dual-Core Data Eng
 这是一个生产级的 Solana 链上监控系统，专为捕捉“聪明钱”和“巨鲸”动向而设计。
 与普通的监控脚本不同，本项目集成了 **双核数据引擎**（Jupiter + DexScreener）以确保数据准确性，拥有 **防空投误报系统** 过滤垃圾信息，并内置了 **智能并发流控**，即使使用免费的 RPC 节点也能稳定运行不报错。
 
-### ✨ 核心功能 (V28)
+#### 📱 效果预览 (Telegram 推送)
+> 实时推送买卖信息，包含精确价格、市值、风险评分及快捷交易链接。
+![Telegram 推送预览](image_5a6082.jpg)
+
+### ✨ 核心功能
 1.  **🚀 双核数据引擎**:
     * **Jupiter API (主)**: 毫秒级获取最准确的代币价格和 Symbol，解决代理屏蔽导致的名字解析失败问题。
     * **DexScreener (副)**: 补充市值 (FDV) 和流动性池数据。
@@ -121,6 +135,10 @@ Unlike simple transaction listeners, this system features a **Dual-Core Data Eng
     ```bash
     pm2 start src/monitor.ts --interpreter ./node_modules/.bin/ts-node --name "sol-monitor"
     ```
+
+#### 🖥️ 运行状态 (终端日志)
+> 支持高并发多线程解析，并在遇到限流时自动智能降速。
+![终端运行日志](image_5a6024.jpg)
 
 ### ⚙️ 参数详解 (src/monitor.ts)
 
